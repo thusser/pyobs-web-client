@@ -10,17 +10,28 @@ const { modules } = useXmpp()
 
     <div v-if="modules.length === 0" class="text-muted" style="font-size:0.9rem">
       <i class="bi bi-info-circle me-1"></i>
-      No modules discovered yet.
+      No pyobs modules online.
     </div>
 
     <div v-else class="row g-3">
-      <div v-for="mod in modules" :key="mod" class="col-sm-6 col-lg-4">
+      <div v-for="mod in modules" :key="mod.jid" class="col-sm-6 col-lg-4">
         <div
-          class="rounded-3 p-3 d-flex align-items-center gap-3"
+          class="rounded-3 p-3"
           style="background-color:#1a1d21; border:1px solid #2d3035"
         >
-          <span class="status-dot unknown"></span>
-          <span class="text-light" style="font-size:0.9rem">{{ mod }}</span>
+          <div class="d-flex align-items-center gap-2 mb-1">
+            <span class="status-dot online"></span>
+            <span class="text-light fw-semibold" style="font-size:0.9rem">{{ mod.name }}</span>
+          </div>
+          <div class="text-muted mb-2" style="font-size:0.75rem">{{ mod.jid }}</div>
+          <div v-if="mod.features.length" class="d-flex flex-wrap gap-1">
+            <span
+              v-for="feat in mod.features"
+              :key="feat"
+              class="badge bg-secondary"
+              style="font-size:0.65rem; font-weight:400"
+            >{{ feat }}</span>
+          </div>
         </div>
       </div>
     </div>

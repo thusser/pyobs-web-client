@@ -33,6 +33,7 @@ const errorMessage = ref<string>('')
 const modules = ref<PyobsModule[]>([])
 
 let connection: InstanceType<typeof Strophe.Connection> | null = null
+let connectionGeneration = 0
 
 function buildWsUrl(domain: string): string {
   if (import.meta.env.VITE_XMPP_WS_URL) {
@@ -170,7 +171,8 @@ async function executeMethod(
 
 // ── connection management ─────────────────────────────────────────────────────
 
-function connect(userJid: string, password: string): Promise<void> {
+function connect(userJid: string, password: string, silent = false): Promise<void> {
+  const myGeneration = ++connectionGeneration
   return new Promise((resolve, reject) => {
     status.value = 'connecting'
     errorMessage.value = ''
@@ -182,6 +184,9 @@ function connect(userJid: string, password: string): Promise<void> {
     connection = new Strophe.Connection(wsUrl)
 
     connection.connect(userJid, password, (st: number) => {
+      // Ignore callbacks from a superseded connection attempt.
+      if (myGeneration !== connectionGeneration) return
+
       if (st === Strophe.Status.CONNECTED) {
         status.value = 'connected'
         sessionStorage.setItem(SESSION_JID_KEY, userJid)
@@ -192,12 +197,15 @@ function connect(userJid: string, password: string): Promise<void> {
         connection!.send($pres())
         resolve()
       } else if (st === Strophe.Status.CONNFAIL) {
-        status.value = 'error'
-        errorMessage.value = 'Connection failed. Check server address and credentials.'
-        sessionStorage.removeItem(SESSION_JID_KEY)
-        sessionStorage.removeItem(SESSION_PW_KEY)
+        // Transient failure — keep credentials so a retry can succeed.
+        // In silent mode (auto-reconnect) keep spinner up; otherwise show error.
+        if (!silent) {
+          status.value = 'error'
+          errorMessage.value = 'Connection failed. Check server address.'
+        }
         reject(new Error('Connection failed'))
       } else if (st === Strophe.Status.AUTHFAIL) {
+        // Wrong password — credentials are definitely bad, clear them.
         status.value = 'error'
         errorMessage.value = 'Authentication failed. Check JID and password.'
         sessionStorage.removeItem(SESSION_JID_KEY)
@@ -224,11 +232,27 @@ function disconnect() {
   modules.value = []
 }
 
-// Restore session automatically on page reload
+// Restore session automatically on page reload, with one retry after 1 s in
+// case ejabberd is still tearing down the previous WebSocket session.
+async function autoReconnect(savedJid: string, savedPassword: string): Promise<void> {
+  try {
+    await connect(savedJid, savedPassword, true)
+  } catch {
+    // First attempt failed — wait 1 s (ejabberd cleaning up old session) then retry.
+    await new Promise((r) => setTimeout(r, 1000))
+    if (sessionStorage.getItem(SESSION_JID_KEY)) {
+      await connect(savedJid, savedPassword, true).catch(() => {
+        // Both attempts failed; let the user log in manually.
+        status.value = 'disconnected'
+      })
+    }
+  }
+}
+
 const storedJid = sessionStorage.getItem(SESSION_JID_KEY)
 const storedPassword = sessionStorage.getItem(SESSION_PW_KEY)
 if (storedJid && storedPassword) {
-  connect(storedJid, storedPassword).catch(() => {})
+  autoReconnect(storedJid, storedPassword)
 }
 
 export function useXmpp() {

@@ -29,7 +29,9 @@ const router = createRouter({
 
 router.beforeEach((to) => {
   const { status } = useXmpp()
-  if (to.meta.requiresAuth && status.value !== 'connected') {
+  // During 'connecting', the App.vue spinner is shown — don't redirect yet.
+  // Only block access when we know the user is not (and won't be) authenticated.
+  if (to.meta.requiresAuth && status.value !== 'connected' && status.value !== 'connecting') {
     return { name: 'login' }
   }
   if (to.name === 'login' && status.value === 'connected') {

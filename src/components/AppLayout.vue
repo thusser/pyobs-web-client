@@ -102,6 +102,15 @@ function navigate(to: string) {
           Shell
         </a>
 
+        <a
+          class="sidebar-link d-flex align-items-center gap-2 px-2 py-2"
+          :class="{ active: route.name === 'logging' }"
+          @click="navigate('/logging')"
+        >
+          <i class="bi bi-journal-text" style="font-size:0.8rem"></i>
+          Logging
+        </a>
+
       </div>
 
       <!-- Logout / user -->

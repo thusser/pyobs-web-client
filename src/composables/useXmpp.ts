@@ -15,11 +15,22 @@ export type RpcResult = {
   value: unknown
 }
 
+export type PyobsEvent = {
+  type: string
+  module: string
+  timestamp: number
+  uuid: string
+  data: Record<string, unknown>
+}
+
 const NS_DISCO_INFO = 'http://jabber.org/protocol/disco#info'
+const NS_PUBSUB = 'http://jabber.org/protocol/pubsub'
+const NS_PUBSUB_EVENT = 'http://jabber.org/protocol/pubsub#event'
 const NS_RPC = 'jabber:iq:rpc'
 const PYOBS_RESOURCE = 'pyobs'
 const SESSION_JID_KEY = 'xmpp_jid'
 const SESSION_PW_KEY = 'xmpp_password'
+const MAX_EVENTS = 500
 
 // Start as 'connecting' immediately if credentials are stored so the first
 // render never shows the login screen before the auto-reconnect kicks in.
@@ -31,6 +42,7 @@ const status = ref<XmppStatus>(
 const jid = ref<string>('')
 const errorMessage = ref<string>('')
 const modules = ref<PyobsModule[]>([])
+const events = ref<PyobsEvent[]>([])
 
 let connection: InstanceType<typeof Strophe.Connection> | null = null
 let connectionGeneration = 0
@@ -73,6 +85,18 @@ async function fetchModuleInfo(bareJid: string, fullJid: string): Promise<void> 
     ...modules.value.filter((m) => m.jid !== bareJid),
     { jid: bareJid, fullJid, name, features },
   ]
+
+  // Subscribe to each PEP event node so ejabberd delivers them to us.
+  const myBareJid = Strophe.getBareJidFromJid(jid.value)
+  for (const feat of features) {
+    if (!feat.startsWith('pyobs:event:')) continue
+    sendIQ(
+      $iq({ to: bareJid, type: 'set' })
+        .c('pubsub', { xmlns: NS_PUBSUB })
+        .c('subscribe', { node: feat, jid: myBareJid })
+        .tree(),
+    ).catch(() => {})
+  }
 }
 
 function handlePresence(presence: Element): boolean {
@@ -92,6 +116,40 @@ function handlePresence(presence: Element): boolean {
   }
 
   return true // keep handler active
+}
+
+// ── PubSub event handler ──────────────────────────────────────────────────────
+
+function handlePubsubMessage(message: Element): boolean {
+  const eventEl = Array.from(message.children).find(
+    (el) => el.localName === 'event' && el.getAttribute('xmlns') === NS_PUBSUB_EVENT,
+  )
+  if (!eventEl) return true
+
+  const itemsEl = eventEl.getElementsByTagName('items')[0]
+  if (!itemsEl) return true
+
+  const node = itemsEl.getAttribute('node') ?? ''
+  if (!node.startsWith('pyobs:event:')) return true
+
+  const payloadEl = itemsEl.getElementsByTagName('item')[0]?.firstElementChild
+  if (!payloadEl) return true
+
+  try {
+    const raw = JSON.parse(payloadEl.textContent ?? '{}')
+    const ev: PyobsEvent = {
+      type: raw.type ?? node.slice(12),
+      module: Strophe.getNodeFromJid(message.getAttribute('from') ?? '') ?? message.getAttribute('from') ?? '?',
+      timestamp: raw.timestamp ?? Date.now() / 1000,
+      uuid: raw.uuid ?? '',
+      data: raw.data ?? {},
+    }
+    events.value = [...events.value.slice(-(MAX_EVENTS - 1)), ev]
+  } catch {
+    // malformed payload — ignore
+  }
+
+  return true
 }
 
 // ── XEP-0009 RPC helpers ──────────────────────────────────────────────────────
@@ -194,6 +252,7 @@ function connect(userJid: string, password: string, silent = false): Promise<voi
         // Register presence handler before sending initial presence so the
         // server's roster-presence flood is captured on arrival
         connection!.addHandler(handlePresence, '', 'presence', '')
+        connection!.addHandler(handlePubsubMessage, NS_PUBSUB_EVENT, 'message', '')
         connection!.send($pres())
         resolve()
       } else if (st === Strophe.Status.CONNFAIL) {
@@ -230,6 +289,7 @@ function disconnect() {
   status.value = 'disconnected'
   jid.value = ''
   modules.value = []
+  events.value = []
 }
 
 // Restore session automatically on page reload, with one retry after 1 s in
@@ -261,8 +321,10 @@ export function useXmpp() {
     jid: readonly(jid),
     errorMessage: readonly(errorMessage),
     modules: readonly(modules),
+    events: readonly(events),
     connect,
     disconnect,
     executeMethod,
+    clearEvents: () => { events.value = [] },
   }
 }

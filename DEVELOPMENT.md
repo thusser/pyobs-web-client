@@ -91,19 +91,88 @@ Concretely, this could mean:
 4. Possibly drop custom per-view polling/derived state entirely in favor of the
    subscribe-once state model now that it's pushed from the server side.
 
-## Open questions / not yet verified
+## Update: the RPC wire format itself changed (breaking, not just additive)
 
-- Haven't inspected a concrete interface (e.g. camera/telescope) to see an actual
-  `Capabilities`/`State` dataclass shape, so the exact TS types to generate are still
-  unknown.
-- Haven't confirmed whether the *unversioned* `pyobs:interface:` feature format ever
-  existed pre-2.0, or whether that's simply a stale assumption baked into
-  `ShellView.vue` from day one (i.e. was this already broken before 2.0, unrelated to
-  the version bump?).
-- Haven't checked `pyobs/comm/xmpp/serializer.py` / `rpc.py` in detail for exact
-  dataclass-to-XML wire format needed to reimplement `_xml_to_dataclass` equivalent in
-  TS.
+Read `pyobs/comm/xmpp/serializer.py` and `pyobs/comm/xmpp/rpc.py` in full. This is
+bigger than "new optional features to adopt" — **Shell's RPC calls will not work
+against a 2.0 backend at all**, because the payload encoding inside XEP-0009 changed:
+
+- Old (what `useXmpp.ts` currently speaks): classic XML-RPC values directly inside
+  `<value>` — `<value><i4>42</i4></value>`, `<value><string>foo</string></value>`, etc.
+  Faults: standard XML-RPC `<fault><value><struct>...`.
+- New (`urn:pyobs:rpc:1`, see `serializer.py` docstring): every value is wrapped in a
+  `<pyobs:value xmlns="urn:pyobs:rpc:1">` container holding one of a fixed vocabulary
+  of tags — `<boolean>`, `<int>`, `<double>`, `<string>`, `<nil>`, `<items>` (list),
+  `<tuple>`, `<dict>` (entry/key/val pairs), or `<{namespace}state>` (nested dataclass,
+  same shape used for state/capabilities). Faults are now
+  `<fault><value><pyobs:fault xmlns="urn:pyobs:rpc:1"><exception>...</exception><message>...</message></pyobs:fault></value></fault>`.
+- This **same vocabulary** (`value_to_xml`/`xml_to_value` in `serializer.py`) is reused
+  for RPC params, RPC return values, state pubsub payloads, and capability payloads —
+  one wire format instead of three separate ad hoc ones. That's the concrete "simpler"
+  angle: the web client can implement one generic `valueToXml`/`xmlToValue` pair in TS
+  and reuse it everywhere, rather of the current `toRpcValue`/`parseRpcValue` pair that
+  only exists for RPC and only knows 3 primitive types.
+- Confirmed method params/returns can now be full dataclasses, lists, tuples, dicts —
+  not just flat primitives — so Shell's current "one text input per param" form model
+  is already an incomplete fit for anything beyond scalars (not new in 2.0, but the
+  gap is more visible now since state/capabilities make structured data commonplace).
+
+## Update: confirmed real State/Capabilities dataclass shapes
+
+From `pyobs/interfaces/ICooling.py`, `IMotion.py`, `IFilters.py`:
+
+```python
+# ICooling
+@dataclass
+class CoolingState:
+    setpoint: Annotated[float, Unit.CELSIUS] | None
+    power: Annotated[int, Unit.PERCENT] | None
+    enabled: bool
+    time: Time = field(default_factory=Time.now)
+
+# IMotion — nested dataclass + list-of-dataclass example
+@dataclass
+class DeviceMotionStatus:
+    name: str
+    status: MotionStatus  # StrEnum
+
+@dataclass
+class MotionState:
+    status: MotionStatus
+    devices: list[DeviceMotionStatus] = field(default_factory=list)
+    time: Time = field(default_factory=Time.now)
+
+# IFilters — capabilities example
+@dataclass
+class FiltersCapabilities:
+    filters: list[str] = field(default_factory=list)
+```
+
+So state/capabilities generation for TS needs to handle: `Annotated[T, Unit]`
+(unwrap to `T`), `T | None`, nested dataclasses, `list[dataclass]`, `StrEnum` fields,
+and a couple of common non-primitive field types (`Time`). Manageable with a similar
+approach to the existing method-param extraction in `generate-interfaces.py`, but
+needs its own code path since it walks dataclass fields, not method signatures.
+
+## Confirmed: version-tagged interface features are brand new (as of today)
+
+`git show 3b4911e9` (commit message: "Version-tag interface disco#info features to
+detect mixed-fleet mismatches", dated 2026-07-01 — today) is the exact commit that
+changed the feature format from `pyobs:interface:{name}` to
+`urn:pyobs:interface:{name}:{version}`. Before that commit, `ShellView.vue`'s
+`pyobs:interface:` prefix check was correct. So this isn't old drift — it's the
+literal same-day tip of the 2.0 branch. Confirms the web client needs to track
+`../pyobs-core` HEAD closely for now, not just "the 2.0 release" as a fixed target.
+
+## Remaining open questions
+
 - Haven't checked whether other `Comm` backends (`local`, `dummy`) matter here — web
   client only ever talks XMPP, so probably irrelevant, but not confirmed.
 - No decision yet on scope: full rewrite of `useXmpp.ts` vs. incremental additions
-  (capabilities/state support layered on top of what exists).
+  (capabilities/state support layered on top of what exists). Given the RPC wire
+  format is a hard break, `executeMethod`/`toRpcValue`/`parseRpcValue` need to change
+  regardless — the open question is really whether to also add generic state/capability
+  subscription in the same pass or as a follow-up.
+- `generate-interfaces.sh` needs to default to (or at least be run against) the local
+  `../pyobs-core` checkout during this work, not PyPI, or every generated type will be
+  stale again immediately.

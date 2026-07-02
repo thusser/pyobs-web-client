@@ -23,8 +23,16 @@ function createElement(tag: string): Element {
   return xmlDoc.createElement(tag)
 }
 
+// `createElementNS` alone sets the DOM's internal `namespaceURI`, but
+// Strophe's Builder.serialize() is a hand-rolled string serializer that only
+// emits attributes literally present in `el.attributes` — it never reads
+// `namespaceURI`. Without an explicit `xmlns` attribute, this element would
+// go out on the wire with no namespace declaration at all, silently
+// inheriting whatever ambient namespace its parent happens to have.
 export function createNamespacedElement(ns: string, tag: string): Element {
-  return xmlDoc.createElementNS(ns, tag)
+  const elem = xmlDoc.createElementNS(ns, tag)
+  elem.setAttribute('xmlns', ns)
+  return elem
 }
 
 // ── decode: value tag vocabulary -> JS value (no schema needed) ────────────

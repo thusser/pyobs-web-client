@@ -70,9 +70,15 @@ function formatWireType(type: WireType): string {
 // A <select> whose bound value doesn't match any of its <option>s renders
 // blank instead of showing the placeholder — seed every param with a value
 // that actually matches one of its widget's options (bool has no empty
-// option, so it needs 'true' rather than '').
+// option, so it needs 'true' rather than ''). Number params also need a
+// real seeded value: an empty number input must never silently become nil
+// for a non-optional int32/float64 param (pyobs-core rejects it, e.g. a
+// "%d format: a real number is required, not NoneType" crash).
 function defaultParamValue(type: WireType): string {
-  return widgetKind(unwrapOptional(type).inner) === 'bool' ? 'true' : ''
+  const kind = widgetKind(unwrapOptional(type).inner)
+  if (kind === 'bool') return 'true'
+  if (kind === 'number') return '0'
+  return ''
 }
 
 watch(selectedJid, () => {
@@ -97,7 +103,9 @@ async function execute() {
       if (optional && (raw === undefined || raw === '')) return null
       const kind = widgetKind(inner)
       if (kind === 'bool') return raw === 'true'
-      if (kind === 'number') return raw === undefined || raw === '' ? null : Number(raw)
+      // Optional + empty was already handled above and returned null; a
+      // non-optional number must always resolve to a real number, never nil.
+      if (kind === 'number') return Number(raw || 0)
       return raw ?? ''
     })
 
